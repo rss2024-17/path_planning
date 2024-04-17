@@ -10,7 +10,7 @@ setup(
     version='0.0.0',
     packages=find_packages(exclude=['test']),
     data_files=[
-        ('share/' + package_name, ['package.xml']),
+        ('share/' + package_name, ['package.xml', "path_planning/params.yaml"]),
         ('share/ament_index/resource_index/packages',
          ['resource/' + package_name]),
         ('share/path_planning/launch/sim', glob.glob(os.path.join('launch', 'sim', '*launch.*'))),
@@ -32,7 +32,8 @@ setup(
             'trajectory_builder = path_planning.trajectory_builder:main',
             'trajectory_loader = path_planning.trajectory_loader:main',
             'trajectory_planner = path_planning.trajectory_planner:main',
-            'trajectory_follower = path_planning.trajectory_follower:main'
+            'trajectory_follower = path_planning.trajectory_follower:main',
+            'car_safety_controller = path_planning.car_safety_controller:main'
         ],
     },
 )
