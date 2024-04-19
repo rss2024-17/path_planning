@@ -40,7 +40,7 @@ class PurePursuit(Node):
                                                1)
         
         self.odom_sub = self.create_subscription(Odometry, self.odom_topic,
-                                                 self.pose_callback,
+                                                 self.odom_pose_callback,
                                                  1)
         
         self.target_pub = self.create_publisher(PoseStamped,
@@ -56,42 +56,44 @@ class PurePursuit(Node):
         
         # create a listener to pose broadcasting
         self.pose_sub = self.create_subscription(PoseWithCovarianceStamped, "/initialpose",
-                                                 self.pose_callback,
+                                                 self.clicked_pose_callback,
                                                  1)
+        
+        self.update_target_freq = 30.0 # in hertz
+        self.create_timer(1/self.update_target_freq, self.update_target)
         
         self.get_logger().info("finished init, waiting for trajectory...")
 
-        # from particle filter 
-        # self.pose_sub = self.create_subscription(PoseWithCovarianceStamped, '/base_link_pf', self.pose_callback, 10)
+    # updates member variables for pose when new odometry data is received
+    def odom_pose_callback(self, odom):
+        self.x = odom.pose.pose.position.x
+        self.y = odom.pose.pose.position.y
+        self.yaw = quaternion_to_euler(odom.pose.pose.orientation.w, odom.pose.pose.orientation.x, odom.pose.pose.orientation.y, odom.pose.pose.orientation.z)[2]
 
-    def pose_callback(self, update_pose):
+    # updates member variables for pose when new clicked data is received
+    def clicked_pose_callback(self, update_pose):
         # https://docs.ros2.org/latest/api/geometry_msgs/msg/PoseWithCovarianceStamped.html
-        
-        if (not self.initialized_traj):
-            self.get_logger().info("received pose, but no trajectory set yet")
-            return
         
         # broadcast clicked pose for visualization
         self.visualize_pose(update_pose)
-
-        position = update_pose.pose.pose.position
-        orientation = update_pose.pose.pose.orientation
         
-        self.x = position.x
-        self.y = position.y
+        # updating member variables
+        self.x = update_pose.pose.pose.position.x
+        self.y = update_pose.pose.pose.position.y
 
+        orientation = update_pose.pose.pose.orientation
         orientation = quaternion_to_euler(orientation.w, orientation.x, orientation.y, orientation.z)
 
         self.yaw = orientation[2] # we just want the yaw
 
-        self.get_logger().info("Set pose to x: %f y: %f theta: %f" % (self.x, self.y, self.yaw))
+        self.get_logger().info("Clicked pose to x: %f y: %f theta: %f" % (self.x, self.y, self.yaw))
 
-        # for later when we switch to odometry
-        # self.x = odometry_msg.pose.pose.position.x
-        # self.y = odometry_msg.pose.pose.position.y
-        # self.yaw = quaternion_to_euler(odometry_msg.pose.pose.orientation.w, odometry_msg.pose.pose.orientation.x, odometry_msg.pose.pose.orientation.y, odometry_msg.pose.pose.orientation.z)[2]
-
-        point = self.find_next_point()
+    def update_target(self):
+        if (not self.initialized_traj): # don't update target if trajectory not initialized lol
+            return
+        
+        self.point = self.find_next_point()
+        return
 
     # Finds the next point on the trajectory that we should be traveling to
     # If point does not exist (within lookahead distance), returns None

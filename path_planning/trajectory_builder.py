@@ -18,7 +18,7 @@ class BuildTrajectory(Node):
     def __init__(self):
         super().__init__("trajectory_builder")
 
-        save_prefix = os.path.join(os.environ["HOME"], "lab6_trajectories")
+        save_prefix = os.path.join(os.environ["HOME"], "racecar_ws/src/path_planning/custom_trajs")
 
         if not os.path.exists(save_prefix):
             self.get_logger().info("Creating the trajectory logging directory: {}".format(save_prefix))
