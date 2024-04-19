@@ -4,6 +4,7 @@ from geometry_msgs.msg import PoseArray
 from rclpy.node import Node
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PoseWithCovarianceStamped
+from geometry_msgs.msg import PoseStamped
 from tf2_msgs.msg import TFMessage #https://docs.ros.org/en/melodic/api/tf2_msgs/html/msg/TFMessage.html
 
 from .utils import LineTrajectory
@@ -23,7 +24,7 @@ class PurePursuit(Node):
         self.odom_topic = self.get_parameter('odom_topic').get_parameter_value().string_value
         self.drive_topic = self.get_parameter('drive_topic').get_parameter_value().string_value
 
-        self.lookahead = 4  # FILL IN #
+        self.lookahead = 1  # FILL IN #
         self.speed = 1.0  # FILL IN #
         self.wheelbase_length = 0  # FILL IN #
 
@@ -42,37 +43,36 @@ class PurePursuit(Node):
                                                  self.pose_callback,
                                                  1)
         
+        self.target_pub = self.create_publisher(PoseStamped,
+                                                "/targetpose",
+                                                1)
+        self.current_pub = self.create_publisher(PoseWithCovarianceStamped,
+                                                 "currentpose",
+                                                 1)
+        
         self.x = 0.0
         self.y = 0.0
         self.yaw = 0.0
-
-        # self.clicked_point = (0, 0)
-        # self.click_sub = self.create_subscription(PoseWithCovarianceStamped, '/initialpose', self.arrow_callback, 10)
-
+        
+        # create a listener to pose broadcasting
         self.pose_sub = self.create_subscription(PoseWithCovarianceStamped, "/initialpose",
                                                  self.pose_callback,
                                                  1)
         
-        # self.tf_pub = self.create_subscription(TFMessage, '/tf', self.tf_callback, 10)
-        # self.sim_pos_x = 0.0
-        # self.sim_pos_y = 0.0
-        # self.sim_theta = 0.0
+        self.get_logger().info("finished init, waiting for trajectory...")
 
         # from particle filter 
         # self.pose_sub = self.create_subscription(PoseWithCovarianceStamped, '/base_link_pf', self.pose_callback, 10)
 
-    # TEMP
-    # def arrow_callback(self, msg_click):
-    #     self.x = msg_click.pose.pose.point.x
-    #     self.y = msg_click.point.y
-    #     self.get_logger().info("Point clicked at %f %f" % (x, y))
-
-    #     point = self.find_next_point()
-    #     # self.generate_random_particles(x,y)
-    #     # self.update_particles_viz()
-
     def pose_callback(self, update_pose):
         # https://docs.ros2.org/latest/api/geometry_msgs/msg/PoseWithCovarianceStamped.html
+        
+        if (not self.initialized_traj):
+            self.get_logger().info("received pose, but no trajectory set yet")
+            return
+        
+        # broadcast clicked pose for visualization
+        self.visualize_pose(update_pose)
 
         position = update_pose.pose.pose.position
         orientation = update_pose.pose.pose.orientation
@@ -93,39 +93,9 @@ class PurePursuit(Node):
 
         point = self.find_next_point()
 
-
-    def intersection_point(self, segment, center_circle):
-        # https://codereview.stackexchange.com/questions/86421/line-segment-to-circle-collision-algorithm/86428#86428 
-
-        # formatting: segment [[-52.59911875073924, 0.3921607738265719], [-52.69975808361432, 0.4931211855300348]]
-        v = [segment[1][0] - segment[0][0], segment[1][1] - segment[0][1]]
-        self.get_logger().info(f"in interesection point")
-        
-        a = np.dot(v, v)
-        b = 2 * (np.dot(v, [segment[0][0] - center_circle[0], segment[0][1] - center_circle[1]]))
-        c = np.dot(segment[0], segment[0]) + np.dot(center_circle, center_circle) - 2 * np.dot(segment[0], center_circle) - self.lookahead**2
-        
-        disc = b**2 - 4 * a * c
-
-        # if not real discriminant
-        if disc < 0:
-            return None
-        
-        sqrt_disc = np.sqrt(disc)
-        t1 = (-b + sqrt_disc) / (2 * a)
-        t2 = (-b - sqrt_disc) / (2 * a)
-
-        # if t1 or t2 are not on the segment
-        if not (0 <= t1 <= 1 or 0 <= t2 <= 1):
-            return None
-
-        return t1, t2
-
-        # they did
-        # t = max(0, min(1, - b / (2 * a)))
-        # return True, segment[0] + t * v 
-        
-    # in robot frame
+    # Finds the next point on the trajectory that we should be traveling to
+    # If point does not exist (within lookahead distance), returns None
+    # Otherwise, returns point as list [x, y, yaw]
     def find_next_point(self):
         points = self.trajectory.points
         num_points = len(points)
@@ -139,12 +109,10 @@ class PurePursuit(Node):
                 min_dist = dist 
                 min_dist_i = i
         
-        self.get_logger().info("Closest segment found:")
-        self.get_logger().info(f"From {points[min_dist_i][0]} {points[min_dist_i][1]} to {points[min_dist_i+1][0]} {points[min_dist_i+1][1]}")
-        self.get_logger().info("Now searching for line-circle intersection...")
+        self.get_logger().info(f"Closest segment found: ({points[min_dist_i][0]}, {points[min_dist_i][1]}) to ({points[min_dist_i+1][0]}, {points[min_dist_i+1][1]})")
 
         # min_dist_i is the index of the closest segment to the robot 
-        point = None
+        point = [False, None, None]
         max_ahead = 5   # can only look this many segments ahead from min_dist_i
         ahead = 0
 
@@ -153,38 +121,126 @@ class PurePursuit(Node):
         # while we haven't found a valid point,
         # we haven't looked ahead more than max_ahead segments,
         # and we haven't reached the final point in the trajectory:
-        while(point == None and ahead < max_ahead and ahead + min_dist_i < num_points-1):
+        while(point[0] == False and ahead < max_ahead and ahead + min_dist_i < num_points-1):
             segment = [
                 [points[min_dist_i+ahead][0], points[min_dist_i+ahead][1]],
                 [points[min_dist_i+ahead+1][0], points[min_dist_i+ahead+1][1]]
             ]
-            # self.get_logger().info(f"segment {segment}")
+            self.get_logger().info(f"Looking {ahead} steps ahead, on segment {segment}")
             point = self.intersection_point(segment, center_circle)
             ahead += 1
         
-        if (point == None): # no point was found lol
-            self.get_logger().info("no point was found hahahahahahhaa")
+        if (point[0] == False): # no point was found lol
+            self.get_logger().info("No point was found :(")
             return None
     
-        self.get_logger().info(f"{point[0]} {point[1]}")
-        
-        return point
+        # point was found! visualize and return it
+        point = [point[1][0], point[1][1], point[2]]
+        self.visualize_target_pose(point)
+        self.get_logger().info(f"Point found! {point}")
+        return 
 
-    # returns the min dist squared between point and the segment with endpoints start and end
-    def min_dist_squared(self, start, end, point):
-        dist_squared = self.dist_squared(start, end)
+    # Receives and processes trajectory
+    def trajectory_callback(self, msg):
+        self.get_logger().info(f"Receiving new trajectory {len(msg.poses)} points")
 
-        if (dist_squared == 0): return self.dist_squared(start, point)
+        self.trajectory.clear()
+        self.trajectory.fromPoseArray(msg)
+        self.trajectory.publish_viz(duration=0.0)
 
-        t = max(0, min(1, self.dot_product([point[0] - start[0], point[1] - start[1]], [end[0] - start[0], end[1] - start[1]]) / dist_squared))
-        # projection = start + t * (end - start) # Projection falls on the segment
-        return t
+        self.get_logger().info("printing trajectory points:")
+        # self.get_logger().info(len(self.trajectory.points))
+        for point in self.trajectory.points:
+            self.get_logger().info(f"{point[0]} {point[1]}")
 
-    def dot_product(self, p1, p2):
-        return p1[0] * p2[0] + p1[1] * p2[1]
+        self.initialized_traj = True
     
-    def dist_squared(self, p1, p2):
-        return (p1[0] - p2[0])**2 + (p1[1] - p2[1])**2 
+    
+    # VISUALIZATION HELPER FUNCTIONS -------------------------------------------------
+
+    # visualizes our current pose with topic /currentpose
+    # with a circle around it with the correct lookahead radius
+    # (abusing covariance field of PoseWithCovarianceStamped lol)
+    def visualize_pose(self, pose):
+        pose.pose.covariance[0] = 1.0 * self.lookahead
+        pose.pose.covariance[7] = 1.0 * self.lookahead
+        pose.pose.covariance[35] = 0.0
+        self.current_pub.publish(pose)
+        return
+    
+    # visualizes our target pose with topic /targetpose
+    def visualize_target_pose(self, point):
+        target_pose = PoseStamped()
+        target_pose.header.frame_id = "/map"
+        target_pose.pose.position.x = point[0]
+        target_pose.pose.position.y = point[1]
+        quat = euler_to_quaternion(0, 0, point[2])
+        target_pose.pose.orientation.x = quat[1]
+        target_pose.pose.orientation.y = quat[2]
+        target_pose.pose.orientation.z = quat[3]
+        target_pose.pose.orientation.w = quat[0]
+        self.target_pub.publish(target_pose)
+        
+    
+    # GEOMETRY HELPER FUNCTIONS -------------------------------------------------
+    # TODO convert these to numpy operations :)
+    
+    # start, end, and point are all vectors
+    # Returns the minimum squared distance between point and the segment from start to end
+    def min_dist_squared(self, start, end, point):
+        start = np.array(start)
+        end = np.array(end)
+        point = np.array(point)
+        
+        dist_squared = np.dot(end-start, end-start)
+
+        if (dist_squared == 0): return np.dot(point-start, point-start) # TODO REPLACE
+
+        t = max(0, min(1, np.dot(point-start, end-start) / dist_squared))
+        proj = start + t * (end - start) # Projection falls on the segment
+        return np.dot(proj-point, proj-point)
+    
+    # segment is a list of two vectors, center_circle is a vector
+    # Returns the point of intersection between the circle centered at center_circle with lookahead radius
+    # and the line between the two vectors in segments
+    # If exists, returns [True, [x,y], yaw]
+    # If false, returns [False, None, None]
+    def intersection_point(self, segments, center_circle):
+        # https://codereview.stackexchange.com/questions/86421/line-segment-to-circle-collision-algorithm/86428#86428 
+
+        p1 = np.array(segments[0])
+        p2 = np.array(segments[1])
+        v = p2-p1
+        q = center_circle
+        r = self.lookahead
+        
+        angle = np.arctan2(v[1], v[0])
+        
+        a = np.dot(v, v)
+        b = 2 * (np.dot(v, p1-q))
+        c = np.dot(p1, p1) + np.dot(q, q) - 2 * np.dot(p1, q) - r**2
+        
+        disc = b**2 - 4 * a * c
+
+        # if not real discriminant (no solution)
+        if disc < 0:
+            return False, None, None
+        
+        sqrt_disc = np.sqrt(disc)
+        t1 = (-b + sqrt_disc) / (2 * a)
+        # t2 = (-b - sqrt_disc) / (2 * a)
+        # we don't care about t2 because the corresponding point to it (p1+t2*v)
+        # will always be "behind" the robot
+        
+        # TODO handle edge case where we are "past" the end target point
+        # possibly add a "backing up" procedure
+        
+        if (0 <= t1 <= 1):
+            return True, p1+t1*v, angle
+        else:
+            return False, None, None
+    
+    # FRAME TRANSFORMATION HELPER FUNCTIONS -------------------------------------------------
     
     def world_to_robot_frame(self, world_pose, robot_pose):
         theta = robot_pose[2]
@@ -193,30 +249,6 @@ class PurePursuit(Node):
         next_theta = (theta + world_pose[2]) % (2 * 3.14159)
 
         return np.array([next_pose[0], next_pose[1], next_theta])
-    
-    def trajectory_callback(self, msg):
-        self.get_logger().info(f"Receiving new trajectory {len(msg.poses)} points")
-
-        self.trajectory.clear()
-        self.trajectory.fromPoseArray(msg)
-        self.trajectory.publish_viz(duration=0.0)
-
-        self.get_logger().info("printing guys")
-        # self.get_logger().info(len(self.trajectory.points))
-        for point in self.trajectory.points:
-            self.get_logger().info(f"{point[0]} {point[1]}")
-
-        self.initialized_traj = True
-
-    # def tf_callback(self, msg_tf):
-    #     frame = msg_tf.transforms[0].header.frame_id
-    #     child = msg_tf.transforms[0].child_frame_id
-    #     if frame == 'map' and child == 'base_link':
-    #         self.sim_pos_x = msg_tf.transforms[0].transform.translation.x
-    #         self.sim_pos_y = msg_tf.transforms[0].transform.translation.y
-    #         self.sim_theta = quaternion_to_euler(msg_tf.transforms[0].transform.rotation.w, msg_tf.transforms[0].transform.rotation.x, msg_tf.transforms[0].transform.rotation.y, msg_tf.transforms[0].transform.rotation.z)[2]
-
-
 
 def quaternion_to_euler(w, x, y, z):
 
@@ -233,6 +265,23 @@ def quaternion_to_euler(w, x, y, z):
     yaw = np.arctan2(siny_cosp, cosy_cosp)
 
     return [roll, pitch, yaw]
+
+# helper function to convert from euler angles to quaternion
+def euler_to_quaternion(roll, pitch, yaw):
+
+    cr = np.cos(roll * 0.5)
+    sr = np.sin(roll * 0.5)
+    cp = np.cos(pitch * 0.5)
+    sp = np.sin(pitch * 0.5)
+    cy = np.cos(yaw * 0.5)
+    sy = np.sin(yaw * 0.5)
+
+    w = cr * cp * cy + sr * sp * sy
+    x = sr * cp * cy - cr * sp * sy
+    y = cr * sp * cy + sr * cp * sy
+    z = cr * cp * sy - sr * sp * cy
+
+    return [w,x,y,z]
 
 
 def main(args=None):
