@@ -59,8 +59,8 @@ class PurePursuit(Node):
                                                  self.clicked_pose_callback,
                                                  1)
         
-        self.update_target_freq = 30.0 # in hertz
-        self.create_timer(1/self.update_target_freq, self.update_target)
+        # self.update_target_freq = 30.0 # in hertz
+        # self.create_timer(1/self.update_target_freq, self.update_target)
         
         self.get_logger().info("finished init, waiting for trajectory...")
 
@@ -87,6 +87,8 @@ class PurePursuit(Node):
         self.yaw = orientation[2] # we just want the yaw
 
         self.get_logger().info("Clicked pose to x: %f y: %f theta: %f" % (self.x, self.y, self.yaw))
+        
+        self.update_target()
 
     def update_target(self):
         if (not self.initialized_traj): # don't update target if trajectory not initialized lol
