@@ -25,8 +25,8 @@ class PurePursuit(Node):
         self.drive_topic = self.get_parameter('drive_topic').get_parameter_value().string_value
 
         self.lookahead = 1  # FILL IN #
-        self.speed = 1.0  # FILL IN #
-        self.wheelbase_length = 0  # FILL IN #
+        self.speed = 2.0  # FILL IN #
+        self.wheelbase_length = 0.2  # FILL IN #
 
         self.trajectory = LineTrajectory("/followed_trajectory")
         self.initialized_traj = False
@@ -53,14 +53,17 @@ class PurePursuit(Node):
         self.x = 0.0
         self.y = 0.0
         self.yaw = 0.0
+        self.target_x = 0.0
+        self.target_y = 0.0
+        self.target_yaw = 0.0
         
         # create a listener to pose broadcasting
         self.pose_sub = self.create_subscription(PoseWithCovarianceStamped, "/initialpose",
                                                  self.clicked_pose_callback,
                                                  1)
         
-        # self.update_target_freq = 30.0 # in hertz
-        # self.create_timer(1/self.update_target_freq, self.update_target)
+        self.update_target_freq = 30.0 # in hertz
+        self.create_timer(1/self.update_target_freq, self.update_target)
         
         self.get_logger().info("finished init, waiting for trajectory...")
 
@@ -75,7 +78,7 @@ class PurePursuit(Node):
         # https://docs.ros2.org/latest/api/geometry_msgs/msg/PoseWithCovarianceStamped.html
         
         # broadcast clicked pose for visualization
-        self.visualize_pose(update_pose)
+        self.visualize_pose()
         
         # updating member variables
         self.x = update_pose.pose.pose.position.x
@@ -89,12 +92,20 @@ class PurePursuit(Node):
         self.get_logger().info("Clicked pose to x: %f y: %f theta: %f" % (self.x, self.y, self.yaw))
         
         self.update_target()
+        self.update_target_angle()
 
     def update_target(self):
         if (not self.initialized_traj): # don't update target if trajectory not initialized lol
             return
-        
+
         self.point = self.find_next_point()
+
+        self.visualize_pose()
+
+        drive_msg = AckermannDriveStamped()
+        drive_msg.drive.speed = self.speed
+        drive_msg.drive.steering_angle = self.update_target_angle()
+        self.drive_pub.publish(drive_msg)
         return
 
     # Finds the next point on the trajectory that we should be traveling to
@@ -113,7 +124,7 @@ class PurePursuit(Node):
                 min_dist = dist 
                 min_dist_i = i
         
-        self.get_logger().info(f"Closest segment found: ({points[min_dist_i][0]}, {points[min_dist_i][1]}) to ({points[min_dist_i+1][0]}, {points[min_dist_i+1][1]})")
+        # self.get_logger().info(f"Closest segment found: ({points[min_dist_i][0]}, {points[min_dist_i][1]}) to ({points[min_dist_i+1][0]}, {points[min_dist_i+1][1]})")
 
         # min_dist_i is the index of the closest segment to the robot 
         point = [False, None, None]
@@ -130,18 +141,21 @@ class PurePursuit(Node):
                 [points[min_dist_i+ahead][0], points[min_dist_i+ahead][1]],
                 [points[min_dist_i+ahead+1][0], points[min_dist_i+ahead+1][1]]
             ]
-            self.get_logger().info(f"Looking {ahead} steps ahead, on segment {segment}")
+            # self.get_logger().info(f"Looking {ahead} steps ahead, on segment {segment}")
             point = self.intersection_point(segment, center_circle)
             ahead += 1
         
         if (point[0] == False): # no point was found lol
-            self.get_logger().info("No point was found :(")
+            # self.get_logger().info("No point was found :(")
             return None
     
         # point was found! visualize and return it
         point = [point[1][0], point[1][1], point[2]]
+        self.target_x = point[0]
+        self.target_y = point[1]
+        self.target_yaw = point[2]
         self.visualize_target_pose(point)
-        self.get_logger().info(f"Point found! {point}")
+        # self.get_logger().info(f"Point found! {point}")
         return 
 
     # Receives and processes trajectory
@@ -165,11 +179,25 @@ class PurePursuit(Node):
     # visualizes our current pose with topic /currentpose
     # with a circle around it with the correct lookahead radius
     # (abusing covariance field of PoseWithCovarianceStamped lol)
-    def visualize_pose(self, pose):
-        pose.pose.covariance[0] = 1.0 * self.lookahead
-        pose.pose.covariance[7] = 1.0 * self.lookahead
-        pose.pose.covariance[35] = 0.0
-        self.current_pub.publish(pose)
+    def visualize_pose(self):
+
+        pose_msg = PoseWithCovarianceStamped()
+
+        pose_msg.pose.covariance[0] = 1.0 * self.lookahead
+        pose_msg.pose.covariance[7] = 1.0 * self.lookahead
+        pose_msg.pose.covariance[35] = 0.0
+
+        pose_msg.header.frame_id = "/map"
+
+        pose_msg.pose.pose.position.x = self.x 
+        pose_msg.pose.pose.position.y = self.y 
+        quat = euler_to_quaternion(0, 0, self.yaw)
+        pose_msg.pose.pose.orientation.w = quat[0]
+        pose_msg.pose.pose.orientation.x = quat[1]
+        pose_msg.pose.pose.orientation.y = quat[2]
+        pose_msg.pose.pose.orientation.z = quat[3]
+
+        self.current_pub.publish(pose_msg)
         return
     
     # visualizes our target pose with topic /targetpose
@@ -184,6 +212,25 @@ class PurePursuit(Node):
         target_pose.pose.orientation.z = quat[3]
         target_pose.pose.orientation.w = quat[0]
         self.target_pub.publish(target_pose)
+
+    def compute_angle(self, point_wrt_car):
+        gy = point_wrt_car[1]
+        angle =  2 * abs(gy)/(self.lookahead**2) # times k constant later
+        return angle
+
+    def update_target_angle(self):
+
+        point_in_car_frame = self.target_pose_in_robot_frame()
+        angle = self.compute_angle(point_in_car_frame)
+        
+        if point_in_car_frame[1] < 0: # to the right of the car, turn right
+            angle = -angle
+
+        self.get_logger().info(f"rel: {[self.target_x - self.x, self.target_y - self.y, self.target_yaw - self.yaw]}")
+        self.get_logger().info(f"in car frame: {point_in_car_frame}")
+        self.get_logger().info(f"angle {angle}")
+
+        return angle
         
     
     # GEOMETRY HELPER FUNCTIONS -------------------------------------------------
@@ -246,13 +293,21 @@ class PurePursuit(Node):
     
     # FRAME TRANSFORMATION HELPER FUNCTIONS -------------------------------------------------
     
-    def world_to_robot_frame(self, world_pose, robot_pose):
-        theta = robot_pose[2]
-        next_pose = robot_pose[0:2] + np.array([np.cos(theta) * world_pose[0] + -np.sin(theta) * world_pose[1], 
-                                                np.sin(theta) * world_pose[0] + np.cos(theta) * world_pose[1]])
-        next_theta = (theta + world_pose[2]) % (2 * 3.14159)
+    # returns pose as (x,y) in robot frame
+    def target_pose_in_robot_frame(self):
+        theta = np.pi/2 - self.yaw
+        
+        world_displacement_vector = np.array([[self.target_x - self.x, self.target_y - self.y]])
+        rotated_unit = np.array([np.cos(theta), -np.sin(theta)])
 
-        return np.array([next_pose[0], next_pose[1], next_theta])
+        self.get_logger().info(f"rotated: {rotated_unit}")
+        
+        # project world displacement vector onto rotated unit
+        y = -np.dot(world_displacement_vector, rotated_unit)[0]
+        x = np.sqrt(np.linalg.norm(world_displacement_vector)**2 - y**2)
+
+        self.get_logger().info(f"x: {x}, y {y}")
+        return x,y
 
 def quaternion_to_euler(w, x, y, z):
 
