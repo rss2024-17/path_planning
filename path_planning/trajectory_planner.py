@@ -2,6 +2,7 @@ import rclpy
 from rclpy.node import Node
 import os
 import math
+from queue import PriorityQueue
 
 assert rclpy
 from geometry_msgs.msg import PoseWithCovarianceStamped, PoseStamped, PoseArray
@@ -207,6 +208,10 @@ class PathPlan(Node):
         for index in indices:
             prob_empty *= (self.map["grid"][index] - 1)
         return (prob_empty > 0.5)
+    
+    def cost_to_move(self, point_a, point_b):
+        cost = self.distance(point_a, point_b)
+        return cost
 
 
     # --- Path Planner Function(s) ---
@@ -219,7 +224,34 @@ class PathPlan(Node):
     # TODO A* (w/ square, triangular, or hexagonal grid, and variable distance between consecutive nodes)
     # Iterate through a queue of nodes until the goal is found. Make sure to check in between nodes for the goal too.
     def a_star(self, start_point, end_point):
-        raise NotImplementedError
+        frontier = PriorityQueue()
+        frontier.put(start_point, 0)
+        reached_from = {start_point: None}
+        pre_cost[start_point] = 0
+        to_check = [start_point]
+        checked = {}
+
+        while to_check:
+            current = to_check[0]
+
+            if (current == end_point):
+                break
+
+            neighbors = [(current[0] + direction[0], current[1] + direction[1]) for direction in self.directions]
+            neighbor_check = []
+            for neighbor in neighbors:
+                if self.can_move(current, neighbor):
+                    neighbor_check.append(neighbor)
+
+            for next in neighbor_check:
+                new_cost = pre_cost[current] + self.cost_to_move(current, next)
+                if next not in pre_cost or  new_cost < pre_cost[next]:
+                    pre_cost[next] = new_cost
+                    priority = new_cost + self.distance(end_point, next)
+                    frontier.put(next, priority)
+                    reached_from[next] = current
+
+
 
     # TODO Sampling-Based Planner (I don't know what this could be yet, we can figure it out later)
 
