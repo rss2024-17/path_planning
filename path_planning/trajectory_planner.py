@@ -45,7 +45,8 @@ class PathPlan(Node):
         # width (int) and height (int) are the dimensions of the map in grid cells
         # resolution (float) is the length in meters that each grid cell represents in the map
         # origin (Pose) is the position and orientation of cell (0, 0) in the map
-        # grid (list[int]) is a list of integers in row-major order, where each cell's integer represents the probability of there being an obstacle in that cell
+        # grid (list[int]) is a list of integers in row-major order. Each cell's integer represents the probability of there being an obstacle in that cell,
+        # and each integer is in the range [0, 100] for probabilities from 0 to 1, or is -1 if the probability is unknown
         self.map = {
             "width": None,
             "height": None,
@@ -62,7 +63,7 @@ class PathPlan(Node):
         
         # These control what algorithm is used to calculate the shortest path between points
         self.path_finders = [self.example_path, self.bfs, self.a_star]
-        self.pf_select = 0
+        self.pf_select = 1
 
         # These are the start and goal point of the path, represented as tuples of the form (x, y)
         self.start_point = None
@@ -152,7 +153,7 @@ class PathPlan(Node):
         Upon receiving the goal pose, pass the position coordinates into self.goal_point, then attempt to run a path-planning algorithm.
         """
         self.get_logger().info("Received goal pose data!")
-        position = msg.pose.pose.position
+        position = msg.pose.position
         self.goal_point = (position.x, position.y)
         if self.map["grid"] is not None and self.start_point is not None:
             self.path_finders[self.pf_select]()
@@ -237,18 +238,23 @@ class PathPlan(Node):
 
     # TODO A* (w/ square, triangular, or hexagonal grid, and variable distance between consecutive nodes)
     # Iterate through a queue of nodes until the goal is found. Make sure to check in between nodes for the goal too.
-    def a_star(self, start_point, end_point):
+    def a_star(self):
+        """
+        Use the A* algorithm to create the shortest path between self.start_point and self.end_point (both represented as tuples of real_world coordinates).
+        Publish the path as a trajectory, or raise an error if there is no possible shortest path.
+        """
         frontier = PriorityQueue()
-        frontier.put(start_point, 0)
-        reached_from = {start_point: None}
-        pre_cost[start_point] = 0
-        to_check = [start_point]
+        frontier.put(self.start_point, 0)
+        reached_from = {self.start_point: None}
+        pre_cost = {}
+        pre_cost[self.start_point] = 0
+        to_check = [self.start_point]
         checked = {}
 
         while to_check:
             current = to_check[0]
 
-            if (current == end_point):
+            if (current == self.end_point):
                 break
 
             neighbors = [(current[0] + direction[0], current[1] + direction[1]) for direction in self.directions]
@@ -261,7 +267,7 @@ class PathPlan(Node):
                 new_cost = pre_cost[current] + self.cost_to_move(current, next)
                 if next not in pre_cost or  new_cost < pre_cost[next]:
                     pre_cost[next] = new_cost
-                    priority = new_cost + self.distance(end_point, next)
+                    priority = new_cost + self.distance(self.end_point, next)
                     frontier.put(next, priority)
                     reached_from[next] = current
 
@@ -280,7 +286,7 @@ class PathPlan(Node):
         """
         reached_from = {self.start_point: None}
         to_check = [self.start_point]
-        checked = {}
+        checked = set()
 
         while to_check:
             current = to_check.pop(0)
