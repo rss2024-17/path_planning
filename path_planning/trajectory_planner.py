@@ -3,9 +3,11 @@ from rclpy.node import Node
 import os
 import math
 from queue import PriorityQueue
+import numpy as np
+
 
 assert rclpy
-from geometry_msgs.msg import PoseWithCovarianceStamped, PoseStamped, PoseArray
+from geometry_msgs.msg import PoseWithCovarianceStamped, PoseStamped, PoseArray, Pose
 from nav_msgs.msg import OccupancyGrid
 from visualization_msgs.msg import Marker
 from .utils import LineTrajectory
@@ -57,13 +59,13 @@ class PathPlan(Node):
 
         # These control how the received map is broken up into a graph for the search-based algorithms to traverse.
         self.grid_type = 2
-        self.step_length = 5
+        self.step_length = 1
         self.directions = [(self.step_length*math.cos(i*math.pi/self.grid_type), self.step_length*math.sin(i*math.pi/self.grid_type))
                            for i in range(0, self.grid_type*2)]
         
         # These control what algorithm is used to calculate the shortest path between points
         self.path_finders = [self.example_path, self.bfs, self.a_star]
-        self.pf_select = 1
+        self.pf_select = 2
 
         # These are the start and goal point of the path, represented as tuples of the form (x, y)
         self.start_point = None
@@ -123,13 +125,21 @@ class PathPlan(Node):
         """
         Upon receiving a map message, pass the data into the self.map dictionary, then attempt to run a path-planning algorithm.
         """
-        self.get_logger().info("Recieved map data!")
+        self.get_logger().info("Received map data!")
         self.map["width"] = msg.info.width
         self.map["height"] = msg.info.height
         self.map["resolution"] = msg.info.resolution
         self.map["origin"] = msg.info.origin
         self.map["grid"] = msg.data
-
+        data = np.array(msg.data).reshape(msg.info.width, msg.info.height)
+        self.map["wxh_grid"]=data
+        
+        # map width: 1730
+        # height: 1300
+        # resolution: 0.0504
+        # origin: 25.9, 48.5
+        # orientation: idk some rotation
+        
         # x = self.map["origin"].position.x
         # y = self.map["origin"].position.y
         # self.get_logger().info(f"{self.get_pixel_at_real_coords(x, y)=}")
@@ -156,7 +166,10 @@ class PathPlan(Node):
         position = msg.pose.position
         self.goal_point = (position.x, position.y)
         if self.map["grid"] is not None and self.start_point is not None:
+            self.get_logger().info(f"{self.start_point}")
+            self.get_logger().info(f"{self.goal_point}")
             self.path_finders[self.pf_select]()
+            
 
     def test_path(self, msg):
         self.get_logger().info(f"Received trajectory data!")
@@ -169,15 +182,26 @@ class PathPlan(Node):
         Assume that the origin's orientation is a quaternion of the form [0, 0, 1, angle (rad)]
         """
         map_pose = self.map["origin"]
-        angle = map_pose.orientation.w
+        euler = quaternion_to_euler(map_pose.orientation.w, map_pose.orientation.x, map_pose.orientation.y, map_pose.orientation.z)
+        angle = euler[2]
         px = map_pose.position.x
         py = map_pose.position.y
+        # self.get_logger().info(f"xy {x} {y}")
+        # self.get_logger().info(f"pxpy {px} {py}")
+        # self.get_logger().info(f"angle {angle}")
 
         # POTENTIAL BUG: Possible incorrect translation from real-world coordinates to pixel coordinates
-        u = (x-px)*math.cos(-angle) - (y-py)*math.sin(-angle)
-        v = (x-px)*math.sin(-angle) + (y-py)*math.cos(-angle)
+        u = (x)*math.cos(-angle) - (y)*math.sin(-angle) + px
+        v = (x)*math.sin(-angle) + (y)*math.cos(-angle) + py
+        
+        # self.get_logger().info(f"uv {u} {v}")
 
-        return int(round(v*self.map["resolution"])*self.map["width"] + (u*self.map["resolution"]))
+        str1 =np.array2string(np.round(u/self.map["resolution"]), separator=', ')
+        str2 =np.array2string(np.round(v/self.map["resolution"]), separator=', ')
+        
+        # self.get_logger().info(f"uv {str1} {str2}")
+        
+        return np.round(v/self.map["resolution"])*self.map["width"] + (np.round(u/self.map["resolution"]))
 
     def distance(self, point_a, point_b):
         """
@@ -198,36 +222,55 @@ class PathPlan(Node):
         coords = {}
         rx = point_b[0]-point_a[0]
         ry = point_b[1]-point_a[1]
-        m = ry/rx
-        b = point_b[1] - m*point_b[0]
-        # x_dir and y_dir are each either 1 or -1
-        x_dir = int(rx/abs(rx))
-        y_dir = int(ry/abs(ry))
 
+        number_of_points = 5
 
-        # Find the x-values where the line crosses between different cells in the grid, and save the two cells in a set
-        x_values = [i*reso for i in range(math.ceil(point_a[0]/reso), math.ceil(point_b[0]/reso), x_dir)]
-        for x_val in x_values:
-            coords.add((x_val-reso/2, m*(x_val-reso/2)+b))
-            coords.add((x_val+reso/2, m*(x_val+reso/2)+b))
+        x_values = rx*np.arange(0, 1, 1/number_of_points)+point_a[0]
+        y_values = ry*np.arange(0, 1, 1/number_of_points)+point_a[1]
+        # self.get_logger().info(f"xy: {x_values} {y_values}")
+        indices = self.get_pixel_at_real_coords(x_values, y_values)
+        
+        # m = ry/rx
+        # b = point_b[1] - m*point_b[0]
+        # # x_dir and y_dir are each either 1 or -1
 
-        # Find the y-values where the line crosses between different cells in the grid, and save the two cells in a set
-        y_values = [j*reso for j in range(math.ceil(point_a[1]/reso), math.ceil(point_b[1]/reso), y_dir)]
-        for y_val in y_values:
-            coords.add((((y_val-reso/2)-b)/m, y_val-reso/2))
-            coords.add((((y_val+reso/2)-b)/m, y_val+reso/2))
+        # x_dir = int(rx/abs(rx))
+        # y_dir = int(ry/abs(ry))
+        
+        # self.get_logger().info(f"directions: {rx} {ry} {x_dir} {y_dir}")
 
-        # Find the indices of all collected coordinates, the calculate the desired probability
-        indices = {self.get_pixel_at_real_coords(*coord) for coord in coords}
-        prob_empty = 1
-        for index in indices:
-            prob_empty *= (self.map["grid"][index] - 1)
-        return (prob_empty > 0.5)
+        # # Find the x-values where the line crosses between different cells in the grid, and save the two cells in a set
+        # x_values = [i*reso for i in range(math.ceil(point_a[0]/reso), math.ceil(point_b[0]/reso), x_dir)]
+        # for x_val in x_values:
+        #     coords.append((x_val-reso/2, m*(x_val-reso/2)+b))
+        #     coords.append((x_val+reso/2, m*(x_val+reso/2)+b))
+
+        # # Find the y-values where the line crosses between different cells in the grid, and save the two cells in a set
+        # y_values = [j*reso for j in range(math.ceil(point_a[1]/reso), math.ceil(point_b[1]/reso), y_dir)]
+        # for y_val in y_values:
+        #     coords.append((((y_val-reso/2)-b)/m, y_val-reso/2))
+        #     coords.append((((y_val+reso/2)-b)/m, y_val+reso/2))
+
+        # # Find the indices of all collected coordinates, the calculate the desired probability
+        # indices = {self.get_pixel_at_real_coords(*coord) for coord in coords}
+        
+        # self.get_logger().info(f"indices: {indices}")
+        
+        # prob_empty = 1
+        for index in list(indices):
+            val = self.map["grid"][int(index)]
+            if (val >0 or val == -1): return False
+            # self.get_logger().info(f"indices: {val}")
+            # prob_empty *= (self.map["grid"][int(index)] - 1)
+        # return (prob_empty > 0.5), prob_empty
+        return True
     
     def cost_to_move(self, point_a, point_b):
         cost = self.distance(point_a, point_b)
         return cost
 
+    def valid_neighbor(self, coord):
+        return coord >= 0 and coord < self.map["width"] * self.map["height"]
 
     # --- Path Planner Function(s) ---
     # The function(s) below will attempt to calculate the shortest feasible path between a start
@@ -244,35 +287,79 @@ class PathPlan(Node):
         Publish the path as a trajectory, or raise an error if there is no possible shortest path.
         """
         frontier = PriorityQueue()
-        frontier.put(self.start_point, 0)
+        frontier.put((0, self.start_point))
         reached_from = {self.start_point: None}
+
+
+        # for pre cost we store int(10^6 times float)
         pre_cost = {}
-        pre_cost[self.start_point] = 0
-        to_check = [self.start_point]
+        def hash(point):
+            return (int(point[0]*10e6), int(point[1]*10e6))
+        pre_cost[hash(self.start_point)] = 0
         checked = {}
+        points_checked_counter = 0
+        while not frontier.empty():
+            current = frontier.get()[1]
 
-        while to_check:
-            current = to_check[0]
-
-            if (current == self.end_point):
+            points_checked_counter+=1
+            self.get_logger().info(f"current: {current}")
+            self.get_logger().info(f"loss: {self.distance(current, self.goal_point)}")
+            
+            #check if we are within a critical distance of the goal
+            #if so,
+            if (self.distance(current, self.goal_point) <= 2 * self.step_length and self.can_move(current, self.goal_point)):
+                reached_from[self.goal_point] = current
                 break
 
             neighbors = [(current[0] + direction[0], current[1] + direction[1]) for direction in self.directions]
             neighbor_check = []
             for neighbor in neighbors:
+                # self.get_logger().info(f"n: {neighbor}")
+                # if self.valid_neighbor(neighbor) and self.can_move(current, neighbor):
                 if self.can_move(current, neighbor):
                     neighbor_check.append(neighbor)
+                # prob=self.can_move(current, neighbor)[1]
+                # self.get_logger().info(f"prob: {prob}")
 
             for next in neighbor_check:
-                new_cost = pre_cost[current] + self.cost_to_move(current, next)
-                if next not in pre_cost or  new_cost < pre_cost[next]:
-                    pre_cost[next] = new_cost
-                    priority = new_cost + self.distance(self.end_point, next)
-                    frontier.put(next, priority)
+                new_cost = pre_cost[hash(current)] + self.step_length
+                already_checked = hash(next) in list(pre_cost.keys())
+                if not already_checked or already_checked and new_cost < pre_cost[hash(next)]:
+                    pre_cost[hash(next)] = new_cost
+                    priority = new_cost + self.distance(self.goal_point, next)
+                    # self.get_logger().info(f"priorities: {priority} next {next} precost {new_cost}")
+                    frontier.put((priority, next))
                     reached_from[next] = current
 
-
-
+        self.get_logger().info(f"NUMBER OF TOTAL POINTS CHECKED: {points_checked_counter}")
+        self.get_logger().info("path found, reconstructing trajectory")
+        self.get_logger().info(f"start and goal: {self.start_point} {self.goal_point}")
+        curr = reached_from[self.goal_point]
+        traj = [curr]
+        self.get_logger().info(f"{curr} {traj}")
+        while (not curr == self.start_point):
+            curr = reached_from[curr]
+            self.get_logger().info(f"{curr}")
+            traj.append(curr)
+        self.get_logger().info(f"{traj}")
+        
+        pose_array_msg = PoseArray()
+        pose_array_msg.header.frame_id = "/map"
+        for i in range(len(traj)-1, -1, -1):
+            p = Pose()
+            p.position.x = traj[i][0]
+            p.position.y = traj[i][1]
+            pose_array_msg.poses.append(p)
+        self.traj_pub.publish(pose_array_msg)
+        
+        # self.get_logger().info(f"{pre_cost.keys()}")
+        
+        # for val in pre_cost.keys():
+        #     p = Pose()
+        #     p.position.x = val[0]
+        #     p.position.y = val[1]
+        #     pose_array_msg.poses.append(p)
+        # self.traj_pub.publish(pose_array_msg)
     # TODO Sampling-Based Planner (I don't know what this could be yet, we can figure it out later)
 
     # TODO Another Search-Based Planner (It's possible that BFS or Djikstra is the better algorithm over A* specifically for driving
@@ -329,7 +416,22 @@ class PathPlan(Node):
         # self.trajectory.addPoint((4.0, 4.0))
         self.traj_pub.publish(self.trajectory.toPoseArray())
         self.trajectory.publish_viz()
+        
+def quaternion_to_euler(w, x, y, z):
 
+    sinr_cosp = 2 * (w * x + y * z)
+    cosr_cosp = 1 - 2 * (x * x + y * y)
+    roll = np.arctan2(sinr_cosp, cosr_cosp)
+
+    sinp = np.sqrt(1 + 2 * (w * y - x * z))
+    cosp = np.sqrt(1 - 2 * (w * y - x * z))
+    pitch = 2 * np.arctan2(sinp, cosp) - np.pi / 2
+
+    siny_cosp = 2 * (w * z + x * y)
+    cosy_cosp = 1 - 2 * (y * y + z * z)
+    yaw = np.arctan2(siny_cosp, cosy_cosp)
+
+    return [roll, pitch, yaw]
 
 def main(args=None):
     rclpy.init(args=args)

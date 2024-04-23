@@ -25,7 +25,7 @@ class PurePursuit(Node):
         self.drive_topic = self.get_parameter('drive_topic').get_parameter_value().string_value
 
         self.lookahead = 1  # FILL IN #
-        self.speed = 2.0  # FILL IN #
+        self.speed = 0.5  # FILL IN #
         self.wheelbase_length = 0.2  # FILL IN #
 
         self.trajectory = LineTrajectory("/followed_trajectory")
@@ -76,6 +76,8 @@ class PurePursuit(Node):
     # updates member variables for pose when new clicked data is received
     def clicked_pose_callback(self, update_pose):
         # https://docs.ros2.org/latest/api/geometry_msgs/msg/PoseWithCovarianceStamped.html
+        
+        return
         
         # broadcast clicked pose for visualization
         self.visualize_pose()
