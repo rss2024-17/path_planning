@@ -10,6 +10,7 @@ from tf2_msgs.msg import TFMessage #https://docs.ros.org/en/melodic/api/tf2_msgs
 from .utils import LineTrajectory
 
 import numpy as np
+import datetime
 
 
 class PurePursuit(Node):
@@ -24,8 +25,8 @@ class PurePursuit(Node):
         self.odom_topic = self.get_parameter('odom_topic').get_parameter_value().string_value
         self.drive_topic = self.get_parameter('drive_topic').get_parameter_value().string_value
 
-        self.lookahead = 1  # FILL IN #
-        self.speed = 2.0  # FILL IN #
+        self.lookahead = 1.0  # FILL IN # typically set to 1
+        self.speed = 4.0  # FILL IN # has worked for 0.5 - 2 so far (4/22)
         self.wheelbase_length = 0.2  # FILL IN #
 
         self.trajectory = LineTrajectory("/followed_trajectory")
@@ -66,6 +67,8 @@ class PurePursuit(Node):
         self.create_timer(1/self.update_target_freq, self.update_target)
         
         self.get_logger().info("finished init, waiting for trajectory...")
+
+        self.start_time = datetime.datetime.now()
 
     # updates member variables for pose when new odometry data is received
     def odom_pose_callback(self, odom):
@@ -123,7 +126,17 @@ class PurePursuit(Node):
             if (dist < min_dist):
                 min_dist = dist 
                 min_dist_i = i
+
+        self.get_logger().info(f"dist: {min_dist}")
         
+        f = open('log_pathplanning_4_0_1_0.txt', "a") # first num is speed #_#, second is lookahead dist #_#
+        f.truncate()
+        # date_difference = datetime.datetime.now() - self.start_time
+        # date_difference.total_seconds()
+        f.write(":%f" % (min_dist))
+        f.close()
+
+            
         # self.get_logger().info(f"Closest segment found: ({points[min_dist_i][0]}, {points[min_dist_i][1]}) to ({points[min_dist_i+1][0]}, {points[min_dist_i+1][1]})")
 
         # min_dist_i is the index of the closest segment to the robot 
@@ -226,9 +239,9 @@ class PurePursuit(Node):
         if point_in_car_frame[1] < 0: # to the right of the car, turn right
             angle = -angle
 
-        self.get_logger().info(f"rel: {[self.target_x - self.x, self.target_y - self.y, self.target_yaw - self.yaw]}")
-        self.get_logger().info(f"in car frame: {point_in_car_frame}")
-        self.get_logger().info(f"angle {angle}")
+        # self.get_logger().info(f"rel: {[self.target_x - self.x, self.target_y - self.y, self.target_yaw - self.yaw]}")
+        # self.get_logger().info(f"in car frame: {point_in_car_frame}")
+        # self.get_logger().info(f"angle {angle}")
 
         return angle
         
@@ -300,13 +313,13 @@ class PurePursuit(Node):
         world_displacement_vector = np.array([[self.target_x - self.x, self.target_y - self.y]])
         rotated_unit = np.array([np.cos(theta), -np.sin(theta)])
 
-        self.get_logger().info(f"rotated: {rotated_unit}")
+        # self.get_logger().info(f"rotated: {rotated_unit}")
         
         # project world displacement vector onto rotated unit
         y = -np.dot(world_displacement_vector, rotated_unit)[0]
         x = np.sqrt(np.linalg.norm(world_displacement_vector)**2 - y**2)
 
-        self.get_logger().info(f"x: {x}, y {y}")
+        # self.get_logger().info(f"x: {x}, y {y}")
         return x,y
 
 def quaternion_to_euler(w, x, y, z):
