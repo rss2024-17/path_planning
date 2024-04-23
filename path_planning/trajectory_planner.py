@@ -2,6 +2,7 @@ import rclpy
 from rclpy.node import Node
 import os
 import math
+from queue import PriorityQueue
 
 assert rclpy
 from geometry_msgs.msg import PoseWithCovarianceStamped, PoseStamped, PoseArray
@@ -29,7 +30,7 @@ class PathPlan(Node):
 
     def __init__(self):
         """
-        Initialize pubs, subs, and class attribtues, and create an instance of the LineTrajectory class.
+        Initialize pubs, subs, and class attributes, and create an instance of the LineTrajectory class.
         """
         super().__init__("trajectory_planner")
         self.declare_parameter('odom_topic', "default")
@@ -44,7 +45,8 @@ class PathPlan(Node):
         # width (int) and height (int) are the dimensions of the map in grid cells
         # resolution (float) is the length in meters that each grid cell represents in the map
         # origin (Pose) is the position and orientation of cell (0, 0) in the map
-        # grid (list[int]) is a list of integers in row-major order, where each cell's integer represents the probability of there being an obstacle in that cell
+        # grid (list[int]) is a list of integers in row-major order. Each cell's integer represents the probability of there being an obstacle in that cell,
+        # and each integer is in the range [0, 100] for probabilities from 0 to 1, or is -1 if the probability is unknown
         self.map = {
             "width": None,
             "height": None,
@@ -53,13 +55,19 @@ class PathPlan(Node):
             "grid": None
         }
 
-        # TODO: Explain what these are
+        # These control how the received map is broken up into a graph for the search-based algorithms to traverse.
         self.grid_type = 2
         self.step_length = 5
         self.directions = [(self.step_length*math.cos(i*math.pi/self.grid_type), self.step_length*math.sin(i*math.pi/self.grid_type))
                            for i in range(0, self.grid_type*2)]
-        self.path_finders = {0: self.bfs, 1: self.a_star}
-        self.path_finder_select = 0
+        
+        # These control what algorithm is used to calculate the shortest path between points
+        self.path_finders = [self.example_path, self.bfs, self.a_star]
+        self.pf_select = 1
+
+        # These are the start and goal point of the path, represented as tuples of the form (x, y)
+        self.start_point = None
+        self.goal_point = None
 
 
         self.map_sub = self.create_subscription(
@@ -95,7 +103,7 @@ class PathPlan(Node):
             10
         )
 
-        self.traj_sub_start = self.create_subscription(
+        self.traj_sub_end = self.create_subscription(
             Marker,
             "/planned_trajectory/end_pose",
             self.test_path,
@@ -113,7 +121,7 @@ class PathPlan(Node):
 
     def map_cb(self, msg):
         """
-        Upon receiving a map message, pass the data into the self.map dictionary, then run a path-planning algorithm.
+        Upon receiving a map message, pass the data into the self.map dictionary, then attempt to run a path-planning algorithm.
         """
         self.get_logger().info("Recieved map data!")
         self.map["width"] = msg.info.width
@@ -122,25 +130,33 @@ class PathPlan(Node):
         self.map["origin"] = msg.info.origin
         self.map["grid"] = msg.data
 
-        x = self.map["origin"].position.x
-        y = self.map["origin"].position.y
-
+        # x = self.map["origin"].position.x
+        # y = self.map["origin"].position.y
         # self.get_logger().info(f"{self.get_pixel_at_real_coords(x, y)=}")
 
-        # self.test_path()
-        self.example_path()
+        if self.start_point is not None and self.goal_point is not None:
+            self.path_finders[self.pf_select]()
+        # self.example_path()
 
-    def pose_cb(self, pose):
+    def pose_cb(self, msg):
         """
-        ...
+        Upon receiving the initial pose, pass the position coordinates into self.start_point, then attempt to run a path-planning algorithm.
         """
         self.get_logger().info("Received initial pose data!")
+        position = msg.pose.pose.position
+        self.start_point = (position.x, position.y)
+        if self.map["grid"] is not None and self.goal_point is not None:
+            self.path_finders[self.pf_select]()
 
     def goal_cb(self, msg):
         """
-        ...
+        Upon receiving the goal pose, pass the position coordinates into self.goal_point, then attempt to run a path-planning algorithm.
         """
         self.get_logger().info("Received goal pose data!")
+        position = msg.pose.position
+        self.goal_point = (position.x, position.y)
+        if self.map["grid"] is not None and self.start_point is not None:
+            self.path_finders[self.pf_select]()
 
     def test_path(self, msg):
         self.get_logger().info(f"Received trajectory data!")
@@ -207,6 +223,10 @@ class PathPlan(Node):
         for index in indices:
             prob_empty *= (self.map["grid"][index] - 1)
         return (prob_empty > 0.5)
+    
+    def cost_to_move(self, point_a, point_b):
+        cost = self.distance(point_a, point_b)
+        return cost
 
 
     # --- Path Planner Function(s) ---
@@ -218,8 +238,40 @@ class PathPlan(Node):
 
     # TODO A* (w/ square, triangular, or hexagonal grid, and variable distance between consecutive nodes)
     # Iterate through a queue of nodes until the goal is found. Make sure to check in between nodes for the goal too.
-    def a_star(self, start_point, end_point):
-        raise NotImplementedError
+    def a_star(self):
+        """
+        Use the A* algorithm to create the shortest path between self.start_point and self.end_point (both represented as tuples of real_world coordinates).
+        Publish the path as a trajectory, or raise an error if there is no possible shortest path.
+        """
+        frontier = PriorityQueue()
+        frontier.put(self.start_point, 0)
+        reached_from = {self.start_point: None}
+        pre_cost = {}
+        pre_cost[self.start_point] = 0
+        to_check = [self.start_point]
+        checked = {}
+
+        while to_check:
+            current = to_check[0]
+
+            if (current == self.end_point):
+                break
+
+            neighbors = [(current[0] + direction[0], current[1] + direction[1]) for direction in self.directions]
+            neighbor_check = []
+            for neighbor in neighbors:
+                if self.can_move(current, neighbor):
+                    neighbor_check.append(neighbor)
+
+            for next in neighbor_check:
+                new_cost = pre_cost[current] + self.cost_to_move(current, next)
+                if next not in pre_cost or  new_cost < pre_cost[next]:
+                    pre_cost[next] = new_cost
+                    priority = new_cost + self.distance(self.end_point, next)
+                    frontier.put(next, priority)
+                    reached_from[next] = current
+
+
 
     # TODO Sampling-Based Planner (I don't know what this could be yet, we can figure it out later)
 
@@ -227,23 +279,23 @@ class PathPlan(Node):
     #   a racecar around. Either algo might run much faster, with the small cost of a slightly longer path. We should consider them
     #   both even when A* seems like the best choice.)
 
-    def bfs(self, start_point, end_point):
+    def bfs(self):
         """
-        Use the BFS algorithm to create the shortest path between the start point and end point (both represented as tuples of real_world coordinates).
+        Use the BFS algorithm to create the shortest path between self.start_point and self.end_point (both represented as tuples of real_world coordinates).
         Publish the path as a trajectory, or raise an error if there is no possible shortest path.
         """
-        reached_from = {start_point: None}
-        to_check = [start_point]
-        checked = {}
+        reached_from = {self.start_point: None}
+        to_check = [self.start_point]
+        checked = set()
 
         while to_check:
             current = to_check.pop(0)
             checked.add(current)
             # Check if current is close enough to end_point to move directly to it
-            if self.distance(current, end_point) < self.step_length:
-                if self.can_move(current, end_point):
+            if self.distance(current, self.goal_point) < self.step_length:
+                if self.can_move(current, self.goal_point):
                     # Build the shortest path
-                    path = [end_point, current]
+                    path = [self.goal_point, current]
                     next_point = reached_from[current]
                     while next_point is not None:
                         path.append(next_point)
@@ -264,8 +316,7 @@ class PathPlan(Node):
         raise Exception("No valid path between points")
                     
 
-
-    def example_path(self, start_point=None, end_point=None, map=None):
+    def example_path(self):
         """
         Publish an example path to be displayed.
         """
