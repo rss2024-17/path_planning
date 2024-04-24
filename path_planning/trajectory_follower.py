@@ -26,7 +26,7 @@ class PurePursuit(Node):
         self.drive_topic = self.get_parameter('drive_topic').get_parameter_value().string_value
 
         self.lookahead = 1  # FILL IN #
-        self.speed = 0.5  # FILL IN #
+        self.speed = 1.0  # FILL IN #
         self.wheelbase_length = 0.2  # FILL IN #
 
         self.trajectory = LineTrajectory("/followed_trajectory")
@@ -37,10 +37,10 @@ class PurePursuit(Node):
                                                  self.trajectory_callback,
                                                  1)
         self.drive_pub = self.create_publisher(AckermannDriveStamped,
-                                               self.drive_topic,
+                                               "/vesc/input/navigation",
                                                1)
         
-        self.odom_sub = self.create_subscription(Odometry, self.odom_topic,
+        self.odom_sub = self.create_subscription(Odometry, "pf/pose/odom",
                                                  self.odom_pose_callback,
                                                  1)
         
@@ -63,15 +63,17 @@ class PurePursuit(Node):
                                                  self.clicked_pose_callback,
                                                  1)
         
-        self.update_target_freq = 30.0 # in hertz
+        self.update_target_freq = 10.0 # in hertz
         self.create_timer(1/self.update_target_freq, self.update_target)
         
         self.get_logger().info("finished init, waiting for trajectory...")
 
         self.start_time = datetime.datetime.now()
+        self.log = False
 
     # updates member variables for pose when new odometry data is received
     def odom_pose_callback(self, odom):
+        self.get_logger().info("updated odom")
         self.x = odom.pose.pose.position.x
         self.y = odom.pose.pose.position.y
         self.yaw = quaternion_to_euler(odom.pose.pose.orientation.w, odom.pose.pose.orientation.x, odom.pose.pose.orientation.y, odom.pose.pose.orientation.z)[2]
@@ -103,15 +105,31 @@ class PurePursuit(Node):
         if (not self.initialized_traj): # don't update target if trajectory not initialized lol
             return
 
+
         self.point = self.find_next_point()
 
         self.visualize_pose()
 
+
         drive_msg = AckermannDriveStamped()
-        drive_msg.drive.speed = self.speed
+        if (self.at_end()):
+            self.get_logger().info(f"at end")
+            drive_msg.drive.speed = 0.0
+        else:
+            drive_msg.drive.speed = self.speed
+
         drive_msg.drive.steering_angle = self.update_target_angle()
         self.drive_pub.publish(drive_msg)
         return
+    
+    def at_end(self):
+        points = self.trajectory.points
+        last_point = points[-1]
+        dist = np.sqrt((self.x - last_point[0])**2 + (self.y - last_point[1])**2)
+        self.get_logger().info(f"dist to end {dist}")         
+        if (dist < 2):
+            return True
+        return False
 
     # Finds the next point on the trajectory that we should be traveling to
     # If point does not exist (within lookahead distance), returns None
@@ -128,15 +146,24 @@ class PurePursuit(Node):
             if (dist < min_dist):
                 min_dist = dist 
                 min_dist_i = i
+        
+        # # stop car when it has reached the end
+        # if (abs(min_dist) < 0.01):
+        #     # self.get_logger().info("reached the end")
+        #     drive_msg = AckermannDriveStamped()
+        #     drive_msg.drive.speed = 0.0
+        #     self.drive_pub.publish(drive_msg)
+        #     return
 
         self.get_logger().info(f"dist: {min_dist}")
         
-        f = open('log_pathplanning_4_0_1_0.txt', "a") # first num is speed #_#, second is lookahead dist #_#
-        f.truncate()
-        # date_difference = datetime.datetime.now() - self.start_time
-        # date_difference.total_seconds()
-        f.write(":%f" % (min_dist))
-        f.close()
+        if (self.log):
+            f = open('log_pathplanning_4_0_1_0.txt', "a") # first num is speed #_#, second is lookahead dist #_#
+            f.truncate()
+            # date_difference = datetime.datetime.now() - self.start_time
+            # date_difference.total_seconds()
+            f.write(":%f" % (min_dist))
+            f.close()
 
             
         # self.get_logger().info(f"Closest segment found: ({points[min_dist_i][0]}, {points[min_dist_i][1]}) to ({points[min_dist_i+1][0]}, {points[min_dist_i+1][1]})")
@@ -187,6 +214,8 @@ class PurePursuit(Node):
             self.get_logger().info(f"{point[0]} {point[1]}")
 
         self.initialized_traj = True
+
+
     
     
     # VISUALIZATION HELPER FUNCTIONS -------------------------------------------------

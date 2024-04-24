@@ -4,12 +4,14 @@ import os
 import math
 from queue import PriorityQueue
 import numpy as np
+import scipy.signal as magic
 
 
 assert rclpy
 from geometry_msgs.msg import PoseWithCovarianceStamped, PoseStamped, PoseArray, Pose
 from nav_msgs.msg import OccupancyGrid
 from visualization_msgs.msg import Marker
+from nav_msgs.msg import Odometry
 from .utils import LineTrajectory
 
 
@@ -60,8 +62,13 @@ class PathPlan(Node):
         # These control how the received map is broken up into a graph for the search-based algorithms to traverse.
         self.grid_type = 2
         self.step_length = 1
-        self.directions = [(self.step_length*math.cos(i*math.pi/self.grid_type), self.step_length*math.sin(i*math.pi/self.grid_type))
-                           for i in range(0, self.grid_type*2)]
+        # self.directions = [(self.step_length*math.cos(i*math.pi/self.grid_type), self.step_length*math.sin(i*math.pi/self.grid_type))
+        #                    for i in range(0, self.grid_type*2)]
+        self.directions = []
+        for x in [-1.0, 0.0, 1.0]:
+            for y in [-1.0, 0.0, 1.0]:
+                if(not (x==0 and y == 0)):
+                    self.directions.append((self.step_length*x/(2)**0.5, self.step_length*y/(2)**0.5))
         
         # These control what algorithm is used to calculate the shortest path between points
         self.path_finders = [self.example_path, self.bfs, self.a_star]
@@ -70,6 +77,10 @@ class PathPlan(Node):
         # These are the start and goal point of the path, represented as tuples of the form (x, y)
         self.start_point = None
         self.goal_point = None
+
+        self.x = 0
+        self.y = 0
+        self.yaw = 0
 
 
         self.map_sub = self.create_subscription(
@@ -98,6 +109,13 @@ class PathPlan(Node):
             10
         )
 
+        self.odom_sub = self.create_subscription(
+            Odometry,
+            '/pf/pose/odom',
+            self.odom_cb,
+            10
+        )
+
         self.traj_sub_start = self.create_subscription(
             Marker,
             "/planned_trajectory/start_point",
@@ -121,6 +139,26 @@ class PathPlan(Node):
 
         self.trajectory = LineTrajectory(node=self, viz_namespace="/planned_trajectory")
 
+        self.goal_has_been_set= False
+        self.counter_started = False
+        self.counter = 0
+
+        self.timer = self.create_timer(0.1, self.start_planning_timer_callback)
+
+    def start_planning_timer_callback(self):
+        if(self.goal_has_been_set):
+            if(self.counter_started):
+                self.counter+=1
+            else:
+                self.counter_started = True
+                self.counter+=1
+        if(self.counter == 20):
+            self.path_finders[self.pf_select]()
+            self.goal_has_been_set = False
+            self.counter_started = False
+            self.counter = 0
+        # self.get_logger().info(f'Timer callback executed {self.counter} times')
+
     def map_cb(self, msg):
         """
         Upon receiving a map message, pass the data into the self.map dictionary, then attempt to run a path-planning algorithm.
@@ -131,8 +169,17 @@ class PathPlan(Node):
         self.map["resolution"] = msg.info.resolution
         self.map["origin"] = msg.info.origin
         self.map["grid"] = msg.data
-        data = np.array(msg.data).reshape(msg.info.width, msg.info.height)
-        self.map["wxh_grid"]=data
+
+        # # if you want to blur
+        # data = np.array(msg.data).reshape(msg.info.height, msg.info.width)
+        # dim = 20
+        # convolution = np.ones((dim, dim))/(dim**2)
+        # blurred_data = magic.convolve2d(data, convolution, mode="same", boundary="fill", fillvalue=100)
+        # blurred_in_og_shape = blurred_data.reshape(-1)
+        # self.map["grid"] = blurred_in_og_shape
+
+
+        # self.map["wxh_grid"]=data
         
         # map width: 1730
         # height: 1300
@@ -144,8 +191,8 @@ class PathPlan(Node):
         # y = self.map["origin"].position.y
         # self.get_logger().info(f"{self.get_pixel_at_real_coords(x, y)=}")
 
-        if self.start_point is not None and self.goal_point is not None:
-            self.path_finders[self.pf_select]()
+        # if self.start_point is not None and self.goal_point is not None:
+        #     self.path_finders[self.pf_select]()
         # self.example_path()
 
     def pose_cb(self, msg):
@@ -155,8 +202,13 @@ class PathPlan(Node):
         self.get_logger().info("Received initial pose data!")
         position = msg.pose.pose.position
         self.start_point = (position.x, position.y)
-        if self.map["grid"] is not None and self.goal_point is not None:
-            self.path_finders[self.pf_select]()
+        # if self.map["grid"] is not None and self.goal_point is not None:
+        #     self.path_finders[self.pf_select]()
+
+    def odom_cb(self, msg):
+        # self.get_logger().info("Received odom data!")
+        odom = msg
+        self.start_point = (odom.pose.pose.position.x, odom.pose.pose.position.y)
 
     def goal_cb(self, msg):
         """
@@ -168,8 +220,9 @@ class PathPlan(Node):
         if self.map["grid"] is not None and self.start_point is not None:
             self.get_logger().info(f"{self.start_point}")
             self.get_logger().info(f"{self.goal_point}")
-            self.path_finders[self.pf_select]()
-            
+            self.goal_has_been_set= True
+            self.get_logger().info("TIMER CALLBACK TILL PLANNING STARTS INITIATED!")
+
 
     def test_path(self, msg):
         self.get_logger().info(f"Received trajectory data!")
@@ -322,7 +375,9 @@ class PathPlan(Node):
                 # self.get_logger().info(f"prob: {prob}")
 
             for next in neighbor_check:
-                new_cost = pre_cost[hash(current)] + self.step_length
+                #CHANGED
+                # new_cost = pre_cost[hash(current)] + self.step_length
+                new_cost = pre_cost[hash(current)] + self.distance(current, next)
                 already_checked = hash(next) in list(pre_cost.keys())
                 if not already_checked or already_checked and new_cost < pre_cost[hash(next)]:
                     pre_cost[hash(next)] = new_cost
@@ -339,9 +394,9 @@ class PathPlan(Node):
         self.get_logger().info(f"{curr} {traj}")
         while (not curr == self.start_point):
             curr = reached_from[curr]
-            self.get_logger().info(f"{curr}")
+            self.get_logger().info(f"curr: {curr}")
             traj.append(curr)
-        self.get_logger().info(f"{traj}")
+        self.get_logger().info(f"trajectory: {traj}")
         
         pose_array_msg = PoseArray()
         pose_array_msg.header.frame_id = "/map"
@@ -350,6 +405,9 @@ class PathPlan(Node):
             p.position.x = traj[i][0]
             p.position.y = traj[i][1]
             pose_array_msg.poses.append(p)
+
+        self.get_logger().info(f" {pose_array_msg}, publishing!!!!!!!!!!!!!!!!!")
+        
         self.traj_pub.publish(pose_array_msg)
         
         # self.get_logger().info(f"{pre_cost.keys()}")
@@ -432,6 +490,23 @@ def quaternion_to_euler(w, x, y, z):
     yaw = np.arctan2(siny_cosp, cosy_cosp)
 
     return [roll, pitch, yaw]
+
+# helper function to convert from euler angles to quaternion
+def euler_to_quaternion(roll, pitch, yaw):
+
+    cr = np.cos(roll * 0.5)
+    sr = np.sin(roll * 0.5)
+    cp = np.cos(pitch * 0.5)
+    sp = np.sin(pitch * 0.5)
+    cy = np.cos(yaw * 0.5)
+    sy = np.sin(yaw * 0.5)
+
+    w = cr * cp * cy + sr * sp * sy
+    x = sr * cp * cy - cr * sp * sy
+    y = cr * sp * cy + sr * cp * sy
+    z = cr * cp * sy - sr * sp * cy
+
+    return [w,x,y,z]
 
 def main(args=None):
     rclpy.init(args=args)
