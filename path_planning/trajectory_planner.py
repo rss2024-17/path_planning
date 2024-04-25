@@ -5,6 +5,7 @@ import math
 from queue import PriorityQueue
 import numpy as np
 import scipy.signal as magic
+import random
 
 
 assert rclpy
@@ -19,8 +20,8 @@ from .utils import LineTrajectory
 # [X]    Choose an algorithm to plan trajectories with (probably A*)
 # [X]    Write/comment code for selecting one of several algo's (in case others are written)
 # [X]    Figure out how the OccupancyGrid message can be used to determine what points are traversable
-# [X?]    Write the code for the selected algorithm, and make sure that it works
-# []    If other algorithms are written, find a way to evaluate each and determine the best one
+# [X]    Write the code for the selected algorithm, and make sure that it works
+# [X?]    If other algorithms are written, find a way to evaluate each and determine the best one
 #           Consider the relative length of returned paths to the objective distance between the start
 #           and goal, as well as how long it takes for each function to run in seconds (The asymptotic
 #            runtime should be well known, and we want the fastest algorithm specifically for the purposes of this lab).
@@ -71,8 +72,8 @@ class PathPlan(Node):
                     self.directions.append((self.step_length*x/(2)**0.5, self.step_length*y/(2)**0.5))
         
         # These control what algorithm is used to calculate the shortest path between points
-        self.path_finders = [self.example_path, self.bfs, self.a_star]
-        self.pf_select = 2
+        self.path_finders = [self.example_path, self.bfs, self.a_star, self.RRT]
+        self.pf_select = 3
 
         # These are the start and goal point of the path, represented as tuples of the form (x, y)
         self.start_point = None
@@ -418,7 +419,60 @@ class PathPlan(Node):
         #     p.position.y = val[1]
         #     pose_array_msg.poses.append(p)
         # self.traj_pub.publish(pose_array_msg)
+
+    
     # TODO Sampling-Based Planner (I don't know what this could be yet, we can figure it out later)
+    def RRT(self):
+        """
+        Use the RRT algorithm to create the shortest path between self.start_point and self.end_point.
+        Publish the path as a trajectory, or raise an error if there is no possible shortest path.
+        """
+        # POTENTIAL BUG: Random points calculated weirdly...
+        def random_coord():
+            range = max(self.map["width"], self.map["height"])*self.map["resolution"]
+            return (random.random()*2 - 1)*range
+        
+        reached_from = {self.start_point: None}
+        points = [self.start_point]
+        while self.goal_point not in reached_from.keys():
+            # Choose a point to move to
+            if random.random() > 0.9:
+                to_point = self.goal_point
+            else:
+                rand_x = random_coord() + self.map["origin"].position.x
+                rand_y = random_coord() + self.map["origin"].position.y
+                to_point = (rand_x, rand_y)
+            try:
+                # Find a point to add to the tree
+                points.sort(key=lambda p: self.distance(p, to_point))
+                closest_point = points[0]
+                to_dist = self.distance(closest_point, to_point)
+                if to_dist <= self.step_length and self.can_move(closest_point, to_point):
+                    reached_from[to_point] = closest_point
+                    points.append(to_point)
+                else:
+                    scale = self.step_length/to_dist
+                    step_point = (c+(t-c)*scale for c, t in zip(closest_point, to_point))
+                    if self.can_move(closest_point, step_point):
+                        reached_from[step_point] = closest_point
+                        points.append(step_point)
+            except:
+                pass
+        # Build path
+        path = []
+        next = self.goal_point
+        while next is not None:
+            path.append(next)
+            next = reached_from[next]
+        path.reverse()
+        self.trajectory.clear()
+        for point in path:
+            self.trajectory.addPoint(point)
+        self.traj_pub.publish(self.trajectory.toPoseArray())
+        self.trajectory.publish_viz()
+        
+            
+
 
     # TODO Another Search-Based Planner (It's possible that BFS or Djikstra is the better algorithm over A* specifically for driving
     #   a racecar around. Either algo might run much faster, with the small cost of a slightly longer path. We should consider them
