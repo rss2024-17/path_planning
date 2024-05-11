@@ -4,7 +4,7 @@ import os
 import math
 from queue import PriorityQueue
 import numpy as np
-import scipy.signal as magic
+# import scipy.signal as magic
 import random
 
 
@@ -73,7 +73,7 @@ class PathPlan(Node):
         
         # These control what algorithm is used to calculate the shortest path between points
         self.path_finders = [self.example_path, self.bfs, self.a_star, self.RRT]
-        self.pf_select = 3
+        self.pf_select = 2
 
         # These are the start and goal point of the path, represented as tuples of the form (x, y)
         self.start_point = None
@@ -144,7 +144,7 @@ class PathPlan(Node):
         self.counter_started = False
         self.counter = 0
 
-        self.timer = self.create_timer(0.1, self.start_planning_timer_callback)
+        # self.timer = self.create_timer(0.1, self.start_planning_timer_callback)
 
     def start_planning_timer_callback(self):
         if(self.goal_has_been_set):
@@ -222,7 +222,8 @@ class PathPlan(Node):
             self.get_logger().info(f"{self.start_point}")
             self.get_logger().info(f"{self.goal_point}")
             self.goal_has_been_set= True
-            self.get_logger().info("TIMER CALLBACK TILL PLANNING STARTS INITIATED!")
+            self.path_finders[self.pf_select]()
+            # self.get_logger().info("TIMER CALLBACK TILL PLANNING STARTS INITIATED!")
 
 
     def test_path(self, msg):
@@ -356,8 +357,8 @@ class PathPlan(Node):
             current = frontier.get()[1]
 
             points_checked_counter+=1
-            self.get_logger().info(f"current: {current}")
-            self.get_logger().info(f"loss: {self.distance(current, self.goal_point)}")
+            # self.get_logger().info(f"current: {current}")
+            # self.get_logger().info(f"loss: {self.distance(current, self.goal_point)}")
             
             #check if we are within a critical distance of the goal
             #if so,

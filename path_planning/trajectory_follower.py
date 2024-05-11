@@ -37,10 +37,10 @@ class PurePursuit(Node):
                                                  self.trajectory_callback,
                                                  1)
         self.drive_pub = self.create_publisher(AckermannDriveStamped,
-                                               "/vesc/input/navigation",
+                                               "/drive",
                                                1)
         
-        self.odom_sub = self.create_subscription(Odometry, "pf/pose/odom",
+        self.odom_sub = self.create_subscription(Odometry, "/odom",
                                                  self.odom_pose_callback,
                                                  1)
         
@@ -73,7 +73,7 @@ class PurePursuit(Node):
 
     # updates member variables for pose when new odometry data is received
     def odom_pose_callback(self, odom):
-        self.get_logger().info("updated odom")
+        # self.get_logger().info("updated odom")
         self.x = odom.pose.pose.position.x
         self.y = odom.pose.pose.position.y
         self.yaw = quaternion_to_euler(odom.pose.pose.orientation.w, odom.pose.pose.orientation.x, odom.pose.pose.orientation.y, odom.pose.pose.orientation.z)[2]
@@ -115,6 +115,7 @@ class PurePursuit(Node):
         if (self.at_end()):
             self.get_logger().info(f"at end")
             drive_msg.drive.speed = 0.0
+            self.initialized_traj = False
         else:
             drive_msg.drive.speed = self.speed
 
@@ -127,7 +128,7 @@ class PurePursuit(Node):
         last_point = points[-1]
         dist = np.sqrt((self.x - last_point[0])**2 + (self.y - last_point[1])**2)
         self.get_logger().info(f"dist to end {dist}")         
-        if (dist < 2):
+        if (dist < 1):
             return True
         return False
 
@@ -155,7 +156,7 @@ class PurePursuit(Node):
         #     self.drive_pub.publish(drive_msg)
         #     return
 
-        self.get_logger().info(f"dist: {min_dist}")
+        # self.get_logger().info(f"dist: {min_dist}")
         
         if (self.log):
             f = open('log_pathplanning_4_0_1_0.txt', "a") # first num is speed #_#, second is lookahead dist #_#

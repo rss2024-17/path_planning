@@ -8,7 +8,6 @@ from ackermann_msgs.msg import AckermannDrive
 from ackermann_msgs.msg import AckermannDriveStamped
 from visualization_msgs.msg import Marker
 from std_msgs.msg import Float32
-from wall_follower.visualization_tools import VisualizationTools
 
 ##ADD TO SETUP.PY!! 
 
